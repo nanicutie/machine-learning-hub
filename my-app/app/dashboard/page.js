@@ -43,16 +43,20 @@ export default function Dashboard() {
         .order("created_at", { ascending: false });
       if (!error) setArticles(data || []);
 
-      // Fetch notifications for this user
-      const { data: notifData } = await supabase
-        .from("notifications")
-        .select("*")
-        .eq("recipient_id", currentUser.id)
-        .order("created_at", { ascending: false })
-        .limit(20);
-      if (notifData) {
-        setNotifications(notifData);
-        setUnreadCount(notifData.filter(n => !n.is_read).length);
+      // Fetch notifications (safe - won't break articles if table missing)
+      try {
+        const { data: notifData } = await supabase
+          .from("notifications")
+          .select("*")
+          .eq("recipient_id", currentUser.id)
+          .order("created_at", { ascending: false })
+          .limit(20);
+        if (notifData) {
+          setNotifications(notifData);
+          setUnreadCount(notifData.filter(n => !n.is_read).length);
+        }
+      } catch {
+        // notifications table not yet created, ignore
       }
     };
     getData();
