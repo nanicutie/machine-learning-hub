@@ -44,24 +44,19 @@ export default function Dashboard() {
       if (!error) setArticles(data || []);
 
       // Fetch notifications for this user
-      await fetchNotifications(currentUser.id);
+      const { data: notifData } = await supabase
+        .from("notifications")
+        .select("*")
+        .eq("recipient_id", currentUser.id)
+        .order("created_at", { ascending: false })
+        .limit(20);
+      if (notifData) {
+        setNotifications(notifData);
+        setUnreadCount(notifData.filter(n => !n.is_read).length);
+      }
     };
     getData();
   }, [router]);
-
-  // Replace: await fetchNotifications(currentUser.id);
-// With this directly inside getData():
-
-    const { data: notifData } = await supabase
-      .from("notifications")
-      .select("*")
-      .eq("recipient_id", currentUser.id)
-      .order("created_at", { ascending: false })
-      .limit(20);
-    if (notifData) {
-      setNotifications(notifData);
-      setUnreadCount(notifData.filter(n => !n.is_read).length);
-    }
 
   const markAllRead = async () => {
     if (!user) return;
