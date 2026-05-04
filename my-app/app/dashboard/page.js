@@ -23,10 +23,27 @@ export default function Dashboard() {
 
   useEffect(() => {
     const getData = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) { router.push("/login"); return; }
+      // First try getSession
+      let session = (await supabase.auth.getSession()).data.session;
+      
+      // If null, wait for onAuthStateChange
+      if (!session) {
+        const { data: { subscription } } = supabase.auth.onAuthStateChange(
+          async (event, newSession) => {
+            if (newSession) {
+              subscription.unsubscribe();
+              await loadData(newSession.user);
+            } else {
+              router.push("/login");
+            }
+          }
+        );
+        return;
+      }
+      await loadData(session.user);
+    };
 
-      const currentUser = session.user;
+    const loadData = async (currentUser) => {
       setUser(currentUser);
 
       const { data: profile } = await supabase
@@ -39,11 +56,10 @@ export default function Dashboard() {
 
       const { data, error } = await supabase
         .from("articles")
-        .select(`*, profiles(username, full_name)`)
+        .select(`*`)
         .order("created_at", { ascending: false });
-      if (!error) setArticles(data || []);
+      if (!error) setArticles(data || [])
 
-      // Fetch notifications (safe - won't break articles if table missing)
       try {
         const { data: notifData } = await supabase
           .from("notifications")
@@ -55,10 +71,9 @@ export default function Dashboard() {
           setNotifications(notifData);
           setUnreadCount(notifData.filter(n => !n.is_read).length);
         }
-      } catch {
-        // notifications table not yet created, ignore
-      }
+      } catch { }
     };
+
     getData();
   }, [router]);
 
@@ -166,7 +181,7 @@ export default function Dashboard() {
         .navbar { display: flex; justify-content: space-between; align-items: center; padding: 28px 0 24px; border-bottom: 1px solid rgba(168,85,247,0.15); margin-bottom: 36px; }
         .brand { display: flex; align-items: baseline; gap: 10px; }
         .brand-title { font-family: 'Cormorant Garamond', serif; font-size: 26px; font-weight: 700; color: #f3e8ff; letter-spacing: 0.02em; line-height: 1; }
-        .brand-title em { font-style: italic; color: rgba(196,181,253,0.7); font-size: 22px; }
+        .brand-title em { font-style: italic; color: rgba(105, 30, 124, 0.7); font-size: 22px; }
         .admin-badge { font-size: 10px; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(196,181,253,0.9); background: rgba(168,85,247,0.18); border: 1px solid rgba(168,85,247,0.3); padding: 3px 10px; border-radius: 20px; }
         .nav-right { display: flex; align-items: center; gap: 12px; }
         .nav-welcome { font-size: 13px; font-weight: 400; color: rgba(196,181,253,0.65); }
