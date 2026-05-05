@@ -8,7 +8,7 @@ import Link from "next/link";
 export default function Dashboard() {
   const [user, setUser] = useState(null);
   const [userRole, setUserRole] = useState(null);
-  const [fullName, setFullName] = useState("");
+  const [fullName, setFullName] = useState(null);
   const [articles, setArticles] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [showNotifs, setShowNotifs] = useState(false);
@@ -43,16 +43,17 @@ export default function Dashboard() {
       await loadData(session.user);
     };
 
-    const loadData = async (currentUser) => {
-      setUser(currentUser);
+    const loadData = async (user) => {
+      setUser(user);
 
-      const { data: profile } = await supabase
+      const { data: profiles } = await supabase
         .from("profiles")
         .select("role, full_name")
-        .eq("id", currentUser.id)
+        .eq("id", user.id)
         .single();
-      setUserRole(profile?.role || "user");
-      setFullName(profile?.full_name || currentUser.email);
+
+      setUserRole(profiles?.role || "user");
+      setFullName(profiles?.full_name || user.email);
 
       const { data, error } = await supabase
         .from("articles")
@@ -64,7 +65,7 @@ export default function Dashboard() {
         const { data: notifData } = await supabase
           .from("notifications")
           .select("*")
-          .eq("recipient_id", currentUser.id)
+          .eq("recipient_id", user.id)
           .order("created_at", { ascending: false })
           .limit(20);
         if (notifData) {
@@ -243,7 +244,7 @@ export default function Dashboard() {
             </div>
             <div className="nav-right">
               {/* Show full name instead of email */}
-              <span className="nav-welcome">Welcome, {fullName}</span>
+              <span className="nav-welcome">Welcome, {fullName || user?.email || '...'}</span>
 
               {/* Notification Bell */}
               <div className="notif-wrapper">
