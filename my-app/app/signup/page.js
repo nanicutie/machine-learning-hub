@@ -9,8 +9,10 @@ export default function Signup() {
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
   const [message, setMessage] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSignUp = async () => {
+    if (isSubmitting) return;
     if (!email.trim() || !password.trim() || !fullName.trim()) {
       setMessage("Please fill in all fields before signing up."); return;
     }
@@ -21,42 +23,33 @@ export default function Signup() {
       setMessage("Password must be at least 8 characters with uppercase, lowercase, number, and symbol."); return;
     }
 
-    const { data, error } = await supabase.auth.signUp({ 
-      email, 
-      password,
-      options: {
-        emailRedirectTo: undefined,
-        data: { full_name: fullName, role }
+    setIsSubmitting(true);
+
+    try {
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          emailRedirectTo: undefined,
+          data: { full_name: fullName, role }
+        }
+      });
+
+      if (error) {
+        setMessage(error.message);
+        return;
       }
-    });
-    if (error) {
-      setMessage(error.message);
-      return;
-    }
 
-    const userId = data.user?.id;
-    if (!userId) {
+      // Profile is created automatically via DB trigger (handle_new_user).
+      // Do NOT upsert here — auth.users row may not be committed yet,
+      // which causes the profiles_id_fkey foreign key violation.
       setMessage("Sign up successful! Please check your email to confirm your account.");
-      return;
+      setEmail("");
+      setPassword("");
+      setFullName("");
+    } finally {
+      setIsSubmitting(false);
     }
-
-    // Wait a moment for auth to settle
-    await new Promise(r => setTimeout(r, 500));
-
-    const { error: profileError } = await supabase
-      .from('profiles')
-      .insert([{ id: userId, email, full_name: fullName, role }]);
-
-    if (profileError) {
-      console.error("Profile insert error:", profileError.message);
-      setMessage("Account created! Please confirm your email then login.");
-      return;
-    }
-
-    setMessage("Sign up successful! Please check your email to confirm your account.");
-    setEmail("");
-    setPassword("");
-    setFullName("");
   };
 
   const switchRole = (newRole) => {
@@ -194,12 +187,14 @@ export default function Signup() {
         .field-input { width: 100%; padding: 11px 15px; background: rgba(88, 28, 135, 0.15); border: 1px solid rgba(168, 85, 247, 0.2); border-radius: 10px; color: #f3e8ff; font-family: 'Inter', sans-serif; font-size: 14px; font-weight: 300; outline: none; transition: border-color 0.2s, box-shadow 0.2s, background 0.2s; }
         .field-input::placeholder { color: rgba(196, 181, 253, 0.28); }
         .field-input:focus { border-color: rgba(168, 85, 247, 0.55); background: rgba(88, 28, 135, 0.25); box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.1); }
+        .field-input:disabled { opacity: 0.5; cursor: not-allowed; }
 
-        .btn-primary { width: 100%; padding: 12px; margin-top: 6px; border: none; border-radius: 10px; background: linear-gradient(135deg, #9333ea, #7c3aed); color: #fff; font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; box-shadow: 0 4px 20px rgba(147, 51, 234, 0.45), inset 0 1px 0 rgba(255,255,255,0.1); transition: transform 0.15s, box-shadow 0.15s; }
+        .btn-primary { width: 100%; padding: 12px; margin-top: 6px; border: none; border-radius: 10px; background: linear-gradient(135deg, #9333ea, #7c3aed); color: #fff; font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; box-shadow: 0 4px 20px rgba(147, 51, 234, 0.45), inset 0 1px 0 rgba(255,255,255,0.1); transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s; }
         .btn-primary.admin-btn { background: linear-gradient(135deg, #b45309, #d97706); box-shadow: 0 4px 20px rgba(217, 119, 6, 0.4), inset 0 1px 0 rgba(255,255,255,0.1); }
-        .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 28px rgba(147, 51, 234, 0.6), inset 0 1px 0 rgba(255,255,255,0.14); }
-        .btn-primary.admin-btn:hover { box-shadow: 0 6px 28px rgba(217, 119, 6, 0.55), inset 0 1px 0 rgba(255,255,255,0.14); }
-        .btn-primary:active { transform: translateY(0); }
+        .btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 28px rgba(147, 51, 234, 0.6), inset 0 1px 0 rgba(255,255,255,0.14); }
+        .btn-primary.admin-btn:hover:not(:disabled) { box-shadow: 0 6px 28px rgba(217, 119, 6, 0.55), inset 0 1px 0 rgba(255,255,255,0.14); }
+        .btn-primary:active:not(:disabled) { transform: translateY(0); }
+        .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
 
         .message { margin-top: 14px; font-size: 12.5px; font-weight: 400; text-align: center; line-height: 1.5; min-height: 18px; padding: 10px 12px; border-radius: 8px; }
         .message.error { color: #fca5a5; background: rgba(220, 38, 38, 0.12); border: 1px solid rgba(220, 38, 38, 0.18); }
@@ -219,13 +214,13 @@ export default function Signup() {
 
           {/* Role Toggle */}
           <div className="toggle-wrap">
-            <button className={`toggle-btn ${role === "user" ? "active" : "inactive"}`} onClick={() => switchRole("user")}>
+            <button className={`toggle-btn ${role === "user" ? "active" : "inactive"}`} onClick={() => switchRole("user")} disabled={isSubmitting}>
               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
               </svg>
               User
             </button>
-            <button className={`toggle-btn ${role === "admin" ? "active admin-tab" : "inactive"}`} onClick={() => switchRole("admin")}>
+            <button className={`toggle-btn ${role === "admin" ? "active admin-tab" : "inactive"}`} onClick={() => switchRole("admin")} disabled={isSubmitting}>
               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
               </svg>
@@ -267,19 +262,21 @@ export default function Signup() {
           {/* Fields */}
           <div className="field-group">
             <label className="field-label">Full Name</label>
-            <input className="field-input" type="text" placeholder="Your full name" value={fullName} onChange={(e) => setFullName(e.target.value)} />
+            <input className="field-input" type="text" placeholder="Your full name" value={fullName} onChange={(e) => setFullName(e.target.value)} disabled={isSubmitting} />
           </div>
           <div className="field-group">
             <label className="field-label">Email</label>
-            <input className="field-input" type="email" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <input className="field-input" type="email" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} disabled={isSubmitting} />
           </div>
           <div className="field-group">
             <label className="field-label">Password</label>
-            <input className="field-input" type="password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSignUp()} />
+            <input className="field-input" type="password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSignUp()} disabled={isSubmitting} />
           </div>
 
-          <button className={`btn-primary ${role === "admin" ? "admin-btn" : ""}`} onClick={handleSignUp}>
-            {role === "admin" ? "Create Admin Account" : "Create Account"}
+          <button className={`btn-primary ${role === "admin" ? "admin-btn" : ""}`} onClick={handleSignUp} disabled={isSubmitting}>
+            {isSubmitting
+              ? "Creating Account…"
+              : role === "admin" ? "Create Admin Account" : "Create Account"}
           </button>
 
           {message && <p className={`message ${isSuccess ? 'success' : 'error'}`}>{message}</p>}
