@@ -10,12 +10,12 @@ export default function ProfilePage() {
   const [articles, setArticles] = useState([]);
   const [isEditing, setIsEditing] = useState(false);
   const [fullName, setFullName] = useState("");
-  const [age, setAge] = useState("");
-  const [contactNumber, setContactNumber] = useState("");
+
   const [username, setUsername] = useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [articleStats, setArticleStats] = useState({});
+  const [loading, setLoading] = useState(true);
   const router = useRouter();
 
   useEffect(() => {
@@ -24,12 +24,33 @@ export default function ProfilePage() {
       if (!user) { router.push("/login"); return; }
       setUser(user);
 
-      const { data: profileData } = await supabase.from("profiles").select("*").eq("id", user.id).single();
+      // Fetch profile — if missing, create it from auth metadata
+      let { data: profileData, error: profileError } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", user.id)
+        .single();
+
+      if (profileError || !profileData) {
+        // Profile row missing (user signed up before the trigger was added).
+        // Create it now from auth user metadata.
+        const meta = user.user_metadata || {};
+        const { data: created } = await supabase
+          .from("profiles")
+          .upsert([{
+            id: user.id,
+            email: user.email,
+            full_name: meta.full_name || "",
+            role: meta.role || "user",
+          }], { onConflict: "id" })
+          .select()
+          .single();
+        profileData = created;
+      }
+
       if (profileData) {
         setProfile(profileData);
         setFullName(profileData.full_name || "");
-        setAge(profileData.age || "");
-        setContactNumber(profileData.contact_number || "");
         setUsername(profileData.username || "");
       }
 
@@ -38,7 +59,6 @@ export default function ProfilePage() {
       if (articleData) {
         setArticles(articleData);
 
-        // Fetch comment counts and like totals per article (for admin stats)
         const statsMap = {};
         for (const article of articleData) {
           const { count: commentCount } = await supabase
@@ -47,6 +67,8 @@ export default function ProfilePage() {
         }
         setArticleStats(statsMap);
       }
+
+      setLoading(false);
     };
     getData();
   }, [router]);
@@ -54,18 +76,18 @@ export default function ProfilePage() {
   const handleSave = async () => {
     setSaving(true);
     const { error } = await supabase.from("profiles")
-      .update({ full_name: fullName, age: parseInt(age), contact_number: contactNumber, username })
+      .update({ full_name: fullName, username })
       .eq("id", user.id);
     setSaving(false);
     if (!error) {
-      setProfile({ ...profile, full_name: fullName, age, contact_number: contactNumber, username });
+      setProfile({ ...profile, full_name: fullName, username });
       setIsEditing(false);
       setMessage("Profile updated successfully!");
       setTimeout(() => setMessage(""), 3000);
     } else { setMessage("Failed to update: " + error.message); }
   };
 
-  if (!user || !profile) return (
+  if (loading || !user || !profile) return (
     <div style={{ minHeight: '100vh', background: '#0d0010', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <p style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '18px', color: 'rgba(196,181,253,0.55)', letterSpacing: '0.1em' }}>Loading profile...</p>
     </div>
@@ -110,7 +132,6 @@ export default function ProfilePage() {
           padding: 0 20px 60px;
         }
 
-        /* ── NAVBAR ── */
         .navbar {
           display: flex; justify-content: space-between; align-items: center;
           padding: 28px 0 24px;
@@ -122,16 +143,13 @@ export default function ProfilePage() {
           display: inline-flex; align-items: center; gap: 7px;
           font-size: 13px; font-weight: 400;
           color: rgba(196,181,253,0.6); text-decoration: none;
-          transition: color 0.2s;
-          letter-spacing: 0.02em;
+          transition: color 0.2s; letter-spacing: 0.02em;
         }
-
         .back-btn:hover { color: #d8b4fe; }
 
         .navbar-title {
           font-family: 'Cormorant Garamond', serif;
-          font-size: 20px; font-weight: 600;
-          color: #f3e8ff;
+          font-size: 20px; font-weight: 600; color: #f3e8ff;
         }
 
         .admin-badge {
@@ -141,7 +159,6 @@ export default function ProfilePage() {
           padding: 3px 10px; border-radius: 20px;
         }
 
-        /* ── STATS BAR (admin only) ── */
         .stats-bar {
           display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
           margin-bottom: 28px;
@@ -151,15 +168,13 @@ export default function ProfilePage() {
           background: rgba(20,0,30,0.65);
           border: 1px solid rgba(168,85,247,0.18);
           border-radius: 12px; padding: 18px 20px;
-          text-align: center;
-          backdrop-filter: blur(8px);
+          text-align: center; backdrop-filter: blur(8px);
         }
 
         .stat-num {
           font-family: 'Cormorant Garamond', serif;
           font-size: 32px; font-weight: 700;
-          color: #f3e8ff; line-height: 1;
-          margin-bottom: 6px;
+          color: #f3e8ff; line-height: 1; margin-bottom: 6px;
         }
 
         .stat-label {
@@ -167,7 +182,6 @@ export default function ProfilePage() {
           color: rgba(196,181,253,0.45);
         }
 
-        /* ── PROFILE CARD ── */
         .profile-card {
           background: rgba(20,0,30,0.72);
           border: 1px solid rgba(168,85,247,0.22);
@@ -189,78 +203,65 @@ export default function ProfilePage() {
           padding: 14px 0;
           border-bottom: 1px solid rgba(168,85,247,0.08);
         }
-
         .info-row:last-of-type { border-bottom: none; }
 
         .info-label {
           font-size: 11px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase;
-          color: rgba(196,181,253,0.45);
+          color: rgba(196,181,253,0.4);
         }
 
-        .info-value {
-          font-size: 14px; font-weight: 400; color: #f3e8ff;
-        }
+        .info-value { font-size: 14px; font-weight: 400; color: #f3e8ff; }
 
         .edit-btn {
-          width: 100%; margin-top: 24px; padding: 12px;
-          background: linear-gradient(135deg, #9333ea, #7c3aed);
-          color: #fff; border: none; border-radius: 10px;
-          font-family: 'DM Sans', sans-serif;
-          font-size: 13px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase;
-          cursor: pointer;
-          box-shadow: 0 4px 20px rgba(147,51,234,0.35);
-          transition: transform 0.15s, box-shadow 0.15s;
+          margin-top: 24px; padding: 10px 24px;
+          background: rgba(168,85,247,0.14);
+          border: 1px solid rgba(168,85,247,0.3);
+          color: rgba(196,181,253,0.85);
+          border-radius: 10px; font-family: 'DM Sans', sans-serif;
+          font-size: 13px; font-weight: 400;
+          cursor: pointer; transition: background 0.2s, color 0.2s;
+          letter-spacing: 0.04em;
         }
+        .edit-btn:hover { background: rgba(168,85,247,0.28); color: #f3e8ff; }
 
-        .edit-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 28px rgba(147,51,234,0.5); }
-
-        /* ── EDIT FORM ── */
         .field { margin-bottom: 16px; }
 
         .field-label {
           display: block; font-size: 11px; font-weight: 500;
           letter-spacing: 0.14em; text-transform: uppercase;
-          color: rgba(196,181,253,0.55); margin-bottom: 8px;
+          color: rgba(196,181,253,0.45); margin-bottom: 7px;
         }
 
         .field-input {
-          width: 100%; padding: 11px 15px;
+          width: 100%; padding: 10px 14px;
           background: rgba(88,28,135,0.15);
           border: 1px solid rgba(168,85,247,0.2);
           border-radius: 10px; color: #f3e8ff;
           font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 300;
-          outline: none;
-          transition: border-color 0.2s, background 0.2s;
+          outline: none; transition: border-color 0.2s, background 0.2s;
         }
+        .field-input:focus { border-color: rgba(168,85,247,0.5); background: rgba(88,28,135,0.25); }
+        .field-input.readonly { opacity: 0.5; cursor: pointer; }
 
-        .field-input::placeholder { color: rgba(196,181,253,0.28); }
-        .field-input:focus { border-color: rgba(168,85,247,0.55); background: rgba(88,28,135,0.25); box-shadow: 0 0 0 3px rgba(168,85,247,0.1); }
-        .field-input.readonly { opacity: 0.45; cursor: not-allowed; }
-
-        .btn-group { display: flex; gap: 10px; margin-top: 22px; }
+        .btn-group { display: flex; gap: 10px; margin-top: 20px; }
 
         .btn-save {
-          flex: 2; padding: 12px;
+          flex: 1; padding: 11px;
           background: linear-gradient(135deg, #9333ea, #7c3aed);
-          color: #fff; border: none; border-radius: 10px;
+          border: none; border-radius: 10px; color: #fff;
           font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500;
-          letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer;
-          box-shadow: 0 4px 20px rgba(147,51,234,0.35);
-          transition: transform 0.15s;
+          cursor: pointer; transition: opacity 0.2s; letter-spacing: 0.06em;
         }
-
-        .btn-save:hover:not(:disabled) { transform: translateY(-1px); }
-        .btn-save:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-save:disabled { opacity: 0.6; cursor: not-allowed; }
 
         .btn-cancel {
-          flex: 1; padding: 12px;
-          background: rgba(168,85,247,0.1);
+          padding: 11px 20px;
+          background: rgba(168,85,247,0.08);
           border: 1px solid rgba(168,85,247,0.2);
           color: rgba(196,181,253,0.6); border-radius: 10px;
           font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 400;
           cursor: pointer; transition: background 0.2s;
         }
-
         .btn-cancel:hover { background: rgba(168,85,247,0.18); color: #d8b4fe; }
 
         .status-msg {
@@ -269,10 +270,8 @@ export default function ProfilePage() {
           background: rgba(22,163,74,0.1); border: 1px solid rgba(22,163,74,0.18);
         }
 
-        /* ── ARTICLES SECTION ── */
         .section-header {
-          display: flex; align-items: center; gap: 12px;
-          margin-bottom: 20px;
+          display: flex; align-items: center; gap: 12px; margin-bottom: 20px;
         }
 
         .section-title {
@@ -280,9 +279,7 @@ export default function ProfilePage() {
           font-size: 22px; font-weight: 600; color: #f3e8ff;
         }
 
-        .section-count {
-          font-size: 12px; color: rgba(196,181,253,0.4); letter-spacing: 0.06em;
-        }
+        .section-count { font-size: 12px; color: rgba(196,181,253,0.4); letter-spacing: 0.06em; }
 
         .article-grid { display: flex; flex-direction: column; gap: 14px; }
 
@@ -292,7 +289,6 @@ export default function ProfilePage() {
           border-radius: 12px; padding: 20px 22px;
           transition: border-color 0.2s, box-shadow 0.2s;
         }
-
         .article-item:hover {
           border-color: rgba(168,85,247,0.4);
           box-shadow: 0 4px 20px rgba(88,28,135,0.2);
@@ -309,15 +305,9 @@ export default function ProfilePage() {
           line-height: 1.6; margin-bottom: 12px;
         }
 
-        .article-meta {
-          display: flex; align-items: center; gap: 16px;
-          flex-wrap: wrap;
-        }
+        .article-meta { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 
-        .article-date {
-          font-size: 12px; color: rgba(196,181,253,0.3);
-          letter-spacing: 0.04em;
-        }
+        .article-date { font-size: 12px; color: rgba(196,181,253,0.3); letter-spacing: 0.04em; }
 
         .article-stat {
           display: inline-flex; align-items: center; gap: 5px;
@@ -334,7 +324,6 @@ export default function ProfilePage() {
         <div className="grid-bg" />
         <div className="page-inner">
 
-          {/* NAVBAR */}
           <nav className="navbar">
             <Link href="/dashboard" className="back-btn">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -348,7 +337,6 @@ export default function ProfilePage() {
             </div>
           </nav>
 
-          {/* ADMIN STATS BAR */}
           {isAdmin && (
             <div className="stats-bar">
               <div className="stat-card">
@@ -366,7 +354,6 @@ export default function ProfilePage() {
             </div>
           )}
 
-          {/* PROFILE CARD */}
           <div className="profile-card">
             {isEditing ? (
               <>
@@ -385,14 +372,7 @@ export default function ProfilePage() {
                     onClick={() => alert('To change your email, please contact the admin.\n\n📧 Email: manaayjerica@gmail.com\n📞 Contact: 09686336110')}
                   />
                 </div>
-                <div className="field">
-                  <label className="field-label">Age</label>
-                  <input className="field-input" type="number" value={age} onChange={(e) => setAge(e.target.value)} placeholder="—" />
-                </div>
-                <div className="field">
-                  <label className="field-label">Contact Number</label>
-                  <input className="field-input" value={contactNumber} onChange={(e) => setContactNumber(e.target.value)} placeholder="—" />
-                </div>
+
                 <div className="btn-group">
                   <button className="btn-save" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save Changes'}</button>
                   <button className="btn-cancel" onClick={() => setIsEditing(false)}>Cancel</button>
@@ -403,15 +383,13 @@ export default function ProfilePage() {
                 <div className="info-row"><span className="info-label">Username</span><span className="info-value">{profile.username || '—'}</span></div>
                 <div className="info-row"><span className="info-label">Full Name</span><span className="info-value">{profile.full_name || '—'}</span></div>
                 <div className="info-row"><span className="info-label">Email</span><span className="info-value">{profile.email}</span></div>
-                <div className="info-row"><span className="info-label">Age</span><span className="info-value">{profile.age || '—'}</span></div>
-                <div className="info-row"><span className="info-label">Contact</span><span className="info-value">{profile.contact_number || '—'}</span></div>
+
                 <button className="edit-btn" onClick={() => setIsEditing(true)}>Edit Profile</button>
               </>
             )}
             {message && <p className="status-msg">{message}</p>}
           </div>
 
-          {/* ARTICLES */}
           <div className="section-header">
             <h2 className="section-title">My Articles</h2>
             <span className="section-count">{articles.length} {articles.length === 1 ? 'article' : 'articles'}</span>
