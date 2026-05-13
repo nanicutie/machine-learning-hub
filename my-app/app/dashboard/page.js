@@ -1,11 +1,12 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { supabase } from "../../lib/supabaseClient";
 import { useRouter } from "next/navigation";
 import ArticleCard from "../../components/ArticleCard";
 import Link from "next/link";
 
 export default function Dashboard() {
+  const notifChannelRef = useRef(null);
   const [user, setUser] = useState(null);
   const [userRole, setUserRole] = useState(null);
   const [fullName, setFullName] = useState(null);
@@ -21,12 +22,27 @@ export default function Dashboard() {
   const [uploading, setUploading] = useState(false);
   const router = useRouter();
 
+  const loadNotifications = useCallback(async (userId) => {
+    try {
+      const { data: notifData } = await supabase
+        .from("notifications")
+        .select("*")
+        .eq("recipient_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(20);
+      if (notifData) {
+        setNotifications(notifData);
+        setUnreadCount(notifData.filter(n => !n.is_read).length);
+      }
+    } catch (err) {
+      console.error('Error loading notifications:', err);
+    }
+  }, []);
+
   useEffect(() => {
     const getData = async () => {
-      // First try getSession
       let session = (await supabase.auth.getSession()).data.session;
-      
-      // If null, wait for onAuthStateChange
+
       if (!session) {
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
           async (event, newSession) => {
@@ -59,24 +75,38 @@ export default function Dashboard() {
         .from("articles")
         .select(`*`)
         .order("created_at", { ascending: false });
-      if (!error) setArticles(data || [])
+      if (!error) setArticles(data || []);
 
-      try {
-        const { data: notifData } = await supabase
-          .from("notifications")
-          .select("*")
-          .eq("recipient_id", user.id)
-          .order("created_at", { ascending: false })
-          .limit(20);
-        if (notifData) {
-          setNotifications(notifData);
-          setUnreadCount(notifData.filter(n => !n.is_read).length);
-        }
-      } catch { }
+      await loadNotifications(user.id);
+
+      if (notifChannelRef.current) return;
+
+      notifChannelRef.current = supabase
+        .channel('notifications-channel')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'notifications',
+            filter: `recipient_id=eq.${user.id}`,
+          },
+          async () => {
+            await loadNotifications(user.id);
+          }
+        )
+        .subscribe();
     };
 
     getData();
-  }, [router]);
+
+    return () => {
+      if (notifChannelRef.current) {
+        supabase.removeChannel(notifChannelRef.current);
+        notifChannelRef.current = null;
+      }
+    };
+  }, [router, loadNotifications]);
 
   const markAllRead = async () => {
     if (!user) return;
@@ -89,6 +119,34 @@ export default function Dashboard() {
     setUnreadCount(0);
   };
 
+  const handleNotificationClick = async (notification) => {
+    if (!notification.is_read) {
+      await supabase
+        .from("notifications")
+        .update({ is_read: true })
+        .eq("id", notification.id);
+      setNotifications(prev =>
+        prev.map(n => n.id === notification.id ? { ...n, is_read: true } : n)
+      );
+      setUnreadCount(prev => Math.max(0, prev - 1));
+    }
+
+    setShowNotifs(false);
+
+    if (notification.article_id) {
+      const articleElement = document.getElementById(`article-${notification.article_id}`);
+      if (articleElement) {
+        setTimeout(() => {
+          articleElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          articleElement.classList.add('highlight-article');
+          setTimeout(() => articleElement.classList.remove('highlight-article'), 2000);
+        }, 100);
+      } else {
+        router.push(`/dashboard#article-${notification.article_id}`);
+      }
+    }
+  };
+
   const handleLogout = async () => {
     await supabase.auth.signOut();
     router.push("/");
@@ -99,7 +157,10 @@ export default function Dashboard() {
   };
 
   const handlePublish = async () => {
-    if (!newTitle.trim() || !newContent.trim()) { alert("Please fill in both title and content."); return; }
+    if (!newTitle.trim() || !newContent.trim()) {
+      alert("Please fill in both title and content.");
+      return;
+    }
     setPublishing(true);
     let file_url = null, file_name = null, file_type = null;
 
@@ -107,9 +168,15 @@ export default function Dashboard() {
       setUploading(true);
       const fileExt = selectedFile.name.split('.').pop();
       const fileName = `${user.id}-${Date.now()}.${fileExt}`;
-      const { error: uploadError } = await supabase.storage.from('articles-image').upload(fileName, selectedFile);
+      const { error: uploadError } = await supabase.storage
+        .from('articles-image')
+        .upload(fileName, selectedFile);
       setUploading(false);
-      if (uploadError) { alert('File upload failed: ' + uploadError.message); setPublishing(false); return; }
+      if (uploadError) {
+        alert('File upload failed: ' + uploadError.message);
+        setPublishing(false);
+        return;
+      }
       const { data: urlData } = supabase.storage.from('articles-image').getPublicUrl(fileName);
       file_url = urlData.publicUrl;
       file_name = selectedFile.name;
@@ -154,60 +221,72 @@ export default function Dashboard() {
     setNewContent("");
     setSelectedFile(null);
     setShowForm(false);
+    // ✅ No client-side notification insert here — DB trigger handles it
   };
 
   if (!user) return (
-    <div style={{ minHeight: '100vh', background: '#0d0010', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '18px', color: 'rgba(196,181,253,0.6)', letterSpacing: '0.1em' }}>Loading...</div>
+    <div style={{
+      minHeight: '100vh', display: 'flex', alignItems: 'center',
+      justifyContent: 'center', background: 'linear-gradient(135deg, #1a0b2e 0%, #16213e 100%)',
+      color: 'rgba(196,181,253,0.6)', fontFamily: 'system-ui', fontSize: '14px'
+    }}>
+      Loading...
     </div>
   );
 
   return (
     <>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400;1,600&family=DM+Sans:wght@300;400;500&display=swap');
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        .dash-root { min-height: 100vh; background: #0d0010; font-family: 'DM Sans', sans-serif; position: relative; }
-        .dash-root::before {
-          content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
-          background: radial-gradient(ellipse 700px 500px at 10% 0%, rgba(168,85,247,0.13) 0%, transparent 70%),
-            radial-gradient(ellipse 500px 400px at 90% 100%, rgba(109,40,217,0.15) 0%, transparent 70%);
-        }
-        .grid-bg {
-          position: fixed; inset: 0; pointer-events: none; z-index: 0;
-          background-image: linear-gradient(rgba(168,85,247,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(168,85,247,0.03) 1px, transparent 1px);
-          background-size: 48px 48px;
-        }
-        .dash-inner { position: relative; z-index: 1; max-width: 780px; margin: 0 auto; padding: 0 20px 60px; }
-        .navbar { display: flex; justify-content: space-between; align-items: center; padding: 28px 0 24px; border-bottom: 1px solid rgba(168,85,247,0.15); margin-bottom: 36px; }
-        .brand { display: flex; align-items: baseline; gap: 10px; }
-        .brand-title { font-family: 'Cormorant Garamond', serif; font-size: 26px; font-weight: 700; color: #f3e8ff; letter-spacing: 0.02em; line-height: 1; }
-        .brand-title em { font-style: italic; color: rgba(105, 30, 124, 0.7); font-size: 22px; }
-        .admin-badge { font-size: 10px; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(196,181,253,0.9); background: rgba(168,85,247,0.18); border: 1px solid rgba(168,85,247,0.3); padding: 3px 10px; border-radius: 20px; }
-        .nav-right { display: flex; align-items: center; gap: 12px; }
-        .nav-welcome { font-size: 13px; font-weight: 400; color: rgba(196,181,253,0.65); }
-        .nav-profile-btn { display: inline-flex; align-items: center; gap: 7px; font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500; color: rgba(196,181,253,0.8); text-decoration: none; padding: 7px 14px; border: 1px solid rgba(168,85,247,0.25); border-radius: 8px; background: rgba(168,85,247,0.08); transition: all 0.2s; }
-        .nav-profile-btn:hover { background: rgba(168,85,247,0.18); border-color: rgba(168,85,247,0.5); color: #d8b4fe; }
-        .nav-logout-btn { font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 400; color: rgba(196,181,253,0.4); background: none; border: none; cursor: pointer; padding: 7px 10px; border-radius: 8px; transition: color 0.2s; letter-spacing: 0.02em; }
-        .nav-logout-btn:hover { color: rgba(196,181,253,0.75); }
+      <style jsx>{`
+        @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=DM+Sans:wght@300;400;500;600&display=swap');
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; overflow-x: hidden; }
+        body { font-family: 'DM Sans', sans-serif; font-weight: 300; background: #0a0015; color: #f3e8ff; }
+        .dash-root { position: relative; min-height: 100vh; width: 100%; overflow-x: hidden; }
+        .grid-bg { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(135deg, #0f0020, #1a0b2e, #16213e); z-index: 0; }
+        .grid-bg::before { content: ''; position: absolute; inset: 0; background-image: 
+          linear-gradient(rgba(168,85,247,0.03) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(168,85,247,0.03) 1px, transparent 1px);
+          background-size: 50px 50px; z-index: 1; }
+        .dash-inner { position: relative; z-index: 2; max-width: 900px; margin: 0 auto; padding: 36px 20px 60px; }
+
+        /* NAVBAR */
+        .navbar { display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; background: rgba(20,0,30,0.75); border: 1px solid rgba(168,85,247,0.22); border-radius: 16px; margin-bottom: 32px; backdrop-filter: blur(12px); box-shadow: 0 8px 32px rgba(88,28,135,0.25); position: relative; z-index: 9999; }
+        .brand { display: flex; align-items: center; gap: 12px; }
+        .brand-title { font-family: 'Cormorant Garamond', serif; font-size: 20px; font-weight: 600; color: #f3e8ff; }
+        .brand-title em { font-style: italic; color: #c084fc; }
+        .admin-badge { display: inline-flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #9333ea, #7c3aed); color: #fff; font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; padding: 4px 10px; border-radius: 8px; box-shadow: 0 2px 10px rgba(147,51,234,0.4); }
+        .nav-right { display: flex; align-items: center; gap: 14px; }
+        .nav-welcome { font-size: 13px; font-weight: 400; color: rgba(196,181,253,0.7); }
+        .nav-profile-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; color: rgba(196,181,253,0.8); background: rgba(168,85,247,0.08); border: 1px solid rgba(168,85,247,0.25); border-radius: 8px; padding: 7px 12px; cursor: pointer; text-decoration: none; transition: all 0.2s; }
+        .nav-profile-btn:hover { background: rgba(168,85,247,0.18); border-color: rgba(168,85,247,0.5); color: #f3e8ff; }
+        .nav-logout-btn { font-size: 13px; font-weight: 500; color: rgba(248,113,113,0.8); background: rgba(220,38,38,0.1); border: 1px solid rgba(220,38,38,0.2); border-radius: 8px; padding: 7px 14px; cursor: pointer; transition: all 0.2s; }
+        .nav-logout-btn:hover { background: rgba(220,38,38,0.2); border-color: rgba(220,38,38,0.35); color: #fca5a5; }
 
         /* NOTIFICATION BELL */
-        .notif-wrapper { position: relative; }
+        .notif-wrapper { position: relative; z-index: 9999; }
         .notif-bell-btn { background: rgba(168,85,247,0.08); border: 1px solid rgba(168,85,247,0.25); border-radius: 8px; padding: 7px 10px; cursor: pointer; color: rgba(196,181,253,0.8); font-size: 16px; position: relative; transition: all 0.2s; display: flex; align-items: center; }
         .notif-bell-btn:hover { background: rgba(168,85,247,0.18); border-color: rgba(168,85,247,0.5); }
         .notif-badge { position: absolute; top: -6px; right: -6px; background: #9333ea; color: #fff; font-size: 10px; font-weight: 700; border-radius: 999px; min-width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; padding: 0 4px; }
-        .notif-dropdown { position: absolute; right: 0; top: calc(100% + 8px); width: 320px; background: rgba(15,0,25,0.97); border: 1px solid rgba(168,85,247,0.25); border-radius: 14px; box-shadow: 0 12px 40px rgba(88,28,135,0.4); z-index: 100; overflow: hidden; }
+        .notif-dropdown { position: absolute; right: 0; top: calc(100% + 8px); width: 360px; background: rgba(15,0,25,0.97); border: 1px solid rgba(168,85,247,0.25); border-radius: 14px; box-shadow: 0 12px 40px rgba(88,28,135,0.4); z-index: 9999; overflow: hidden; }
         .notif-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid rgba(168,85,247,0.12); }
         .notif-header-title { font-size: 13px; font-weight: 500; color: #f3e8ff; letter-spacing: 0.05em; }
         .notif-mark-btn { font-size: 11px; color: rgba(168,85,247,0.8); background: none; border: none; cursor: pointer; }
         .notif-mark-btn:hover { color: #c084fc; }
-        .notif-list { max-height: 320px; overflow-y: auto; }
-        .notif-item { padding: 12px 16px; border-bottom: 1px solid rgba(168,85,247,0.06); transition: background 0.15s; }
-        .notif-item:hover { background: rgba(168,85,247,0.07); }
+        .notif-list { max-height: 400px; overflow-y: auto; }
+        .notif-item { padding: 12px 16px; border-bottom: 1px solid rgba(168,85,247,0.06); transition: background 0.15s; cursor: pointer; }
+        .notif-item:hover { background: rgba(168,85,247,0.12); }
         .notif-item.unread { background: rgba(168,85,247,0.09); }
+        .notif-item.unread:hover { background: rgba(168,85,247,0.15); }
         .notif-text { font-size: 13px; color: rgba(196,181,253,0.85); line-height: 1.5; }
+        .notif-link-hint { font-size: 11px; color: rgba(168,85,247,0.6); margin-top: 2px; }
         .notif-time { font-size: 11px; color: rgba(196,181,253,0.35); margin-top: 4px; }
         .notif-empty { padding: 24px 16px; text-align: center; font-size: 13px; color: rgba(196,181,253,0.35); font-style: italic; }
+
+        @keyframes highlight-pulse {
+          0%, 100% { box-shadow: 0 8px 32px rgba(147,51,234,0.15); }
+          50% { box-shadow: 0 8px 48px rgba(147,51,234,0.45), 0 0 0 3px rgba(168,85,247,0.3); }
+        }
+        :global(.highlight-article) { animation: highlight-pulse 1s ease-in-out 2; }
 
         .action-bar { margin-bottom: 24px; display: flex; justify-content: flex-end; }
         .publish-toggle-btn { display: inline-flex; align-items: center; gap: 8px; font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500; letter-spacing: 0.08em; color: #fff; background: linear-gradient(135deg, #9333ea, #7c3aed); border: none; border-radius: 10px; padding: 10px 20px; cursor: pointer; box-shadow: 0 4px 20px rgba(147,51,234,0.4), inset 0 1px 0 rgba(255,255,255,0.1); transition: transform 0.15s, box-shadow 0.15s; }
@@ -243,12 +322,16 @@ export default function Dashboard() {
               {userRole === "admin" && <span className="admin-badge">Admin</span>}
             </div>
             <div className="nav-right">
-              {/* Show full name instead of email */}
               <span className="nav-welcome">Welcome, {fullName || user?.email || '...'}</span>
 
-              {/* Notification Bell */}
               <div className="notif-wrapper">
-                <button className="notif-bell-btn" onClick={() => { setShowNotifs(p => !p); if (!showNotifs && unreadCount > 0) markAllRead(); }}>
+                <button
+                  className="notif-bell-btn"
+                  onClick={() => {
+                    setShowNotifs(p => !p);
+                    if (!showNotifs && unreadCount > 0) markAllRead();
+                  }}
+                >
                   🔔
                   {unreadCount > 0 && <span className="notif-badge">{unreadCount}</span>}
                 </button>
@@ -264,9 +347,21 @@ export default function Dashboard() {
                       {notifications.length === 0 ? (
                         <div className="notif-empty">No notifications yet</div>
                       ) : notifications.map(n => (
-                        <div key={n.id} className={`notif-item${!n.is_read ? ' unread' : ''}`}>
+                        <div
+                          key={n.id}
+                          className={`notif-item${!n.is_read ? ' unread' : ''}`}
+                          onClick={() => handleNotificationClick(n)}
+                        >
                           <p className="notif-text">{n.message}</p>
-                          <p className="notif-time">{new Date(n.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
+                          {n.article_id && (
+                            <p className="notif-link-hint">→ Click to view article</p>
+                          )}
+                          <p className="notif-time">
+                            {new Date(n.created_at).toLocaleDateString('en-US', {
+                              month: 'short', day: 'numeric',
+                              hour: '2-digit', minute: '2-digit'
+                            })}
+                          </p>
                         </div>
                       ))}
                     </div>
@@ -285,7 +380,10 @@ export default function Dashboard() {
           </nav>
 
           <div className="action-bar">
-            <button className={`publish-toggle-btn ${showForm ? 'cancel' : ''}`} onClick={() => setShowForm(!showForm)}>
+            <button
+              className={`publish-toggle-btn ${showForm ? 'cancel' : ''}`}
+              onClick={() => setShowForm(!showForm)}
+            >
               {showForm ? (
                 <><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>Cancel</>
               ) : (
@@ -298,20 +396,49 @@ export default function Dashboard() {
             <div className="publish-form">
               <div>
                 <label className="form-label">Title</label>
-                <input type="text" className="form-input" placeholder="Give your article a title..." value={newTitle} onChange={(e) => setNewTitle(e.target.value)} />
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="Give your article a title..."
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                />
               </div>
               <div>
                 <label className="form-label">Content</label>
-                <textarea className="form-textarea" placeholder="Write your article here..." value={newContent} onChange={(e) => setNewContent(e.target.value)} rows={6} />
+                <textarea
+                  className="form-textarea"
+                  placeholder="Write your article here..."
+                  value={newContent}
+                  onChange={(e) => setNewContent(e.target.value)}
+                  rows={6}
+                />
               </div>
               <div className="file-zone">
-                <input type="file" id="file-upload" accept="image/*,.pdf,.doc,.docx" style={{ display: 'none' }} onChange={(e) => setSelectedFile(e.target.files[0])} />
+                <input
+                  type="file"
+                  id="file-upload"
+                  accept="image/*,.pdf,.doc,.docx"
+                  style={{ display: 'none' }}
+                  onChange={(e) => setSelectedFile(e.target.files[0])}
+                />
                 <label htmlFor="file-upload" className="file-zone-label">
                   <span>Attach a file</span> — image or document
-                  {selectedFile && (<>{' · '}{selectedFile.name}<button onClick={(e) => { e.preventDefault(); setSelectedFile(null); }} className="remove-file-btn">✕ remove</button></>)}
+                  {selectedFile && (
+                    <>{' · '}{selectedFile.name}
+                      <button
+                        onClick={(e) => { e.preventDefault(); setSelectedFile(null); }}
+                        className="remove-file-btn"
+                      >✕ remove</button>
+                    </>
+                  )}
                 </label>
               </div>
-              <button className="submit-btn" onClick={handlePublish} disabled={publishing || uploading}>
+              <button
+                className="submit-btn"
+                onClick={handlePublish}
+                disabled={publishing || uploading}
+              >
                 {uploading ? 'Uploading...' : publishing ? 'Publishing...' : 'Publish'}
               </button>
             </div>
