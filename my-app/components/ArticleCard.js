@@ -112,6 +112,29 @@ export default function ArticleCard({ article: initialArticle, currentUserId, cu
     setShowComments(!showComments);
   };
 
+  // ── Helper: get current user's display name for notification messages ──
+  const getCurrentUserName = async () => {
+    if (!currentUserId) return 'Someone';
+    const { data } = await supabase
+      .from('profiles')
+      .select('full_name, username')
+      .eq('id', currentUserId)
+      .single();
+    return data?.full_name || data?.username || 'Someone';
+  };
+
+  // ── Send notification (skips if recipient === actor to avoid self-notifs) ──
+  const sendNotification = async ({ recipientId, message, articleId, type }) => {
+    if (!recipientId || recipientId === currentUserId) return;
+    await supabase.from('notifications').insert([{
+      recipient_id: recipientId,
+      message,
+      article_id: articleId,
+      type,          // e.g. 'like' | 'comment' | 'published'
+      is_read: false,
+    }]);
+  };
+
   const handleAddComment = async () => {
     if (!currentUserId) return alert('Please login to comment.');
     if (!newComment.trim()) return;
@@ -121,7 +144,18 @@ export default function ArticleCard({ article: initialArticle, currentUserId, cu
       }]);
       if (error) throw error;
       setNewComment(''); 
-      await fetchComments(); 
+      await fetchComments();
+
+      // Notify the article author that someone commented
+      if (article.author_id && article.author_id !== currentUserId) {
+        const name = await getCurrentUserName();
+        await sendNotification({
+          recipientId: article.author_id,
+          message: `💬 ${name} commented on your article "${article.title}"`,
+          articleId: article.id,
+          type: 'comment',
+        });
+      }
     } catch (err) {
       alert('Comment failed: ' + err.message);
     }
@@ -135,7 +169,19 @@ export default function ArticleCard({ article: initialArticle, currentUserId, cu
         article_id: article.id, user_id: currentUserId, content: replyText.trim(), parent_id: parentId 
       }]);
       if (error) throw error;
-      setReplyText(''); setReplyingTo(null); await fetchComments(); 
+      setReplyText(''); setReplyingTo(null); await fetchComments();
+
+      // Notify the parent comment owner that someone replied
+      const parentComment = comments.find(c => c.id === parentId);
+      if (parentComment && parentComment.user_id !== currentUserId) {
+        const name = await getCurrentUserName();
+        await sendNotification({
+          recipientId: parentComment.user_id,
+          message: `↩️ ${name} replied to your comment on "${article.title}"`,
+          articleId: article.id,
+          type: 'comment',
+        });
+      }
     } catch (err) {
       alert('Reply failed: ' + err.message);
     }
@@ -182,6 +228,17 @@ export default function ArticleCard({ article: initialArticle, currentUserId, cu
         if (originalHasDisliked) {
           await supabase.from('dislikes').delete()
             .eq('user_id', currentUserId).eq('article_id', article.id);
+        }
+
+        // Notify article author of the like (only when liking, not unliking)
+        if (article.author_id && article.author_id !== currentUserId) {
+          const name = await getCurrentUserName();
+          await sendNotification({
+            recipientId: article.author_id,
+            message: `🔥 ${name} liked your article "${article.title}"`,
+            articleId: article.id,
+            type: 'like',
+          });
         }
       }
       // Sync real counts from likes/dislikes tables
@@ -344,7 +401,6 @@ export default function ArticleCard({ article: initialArticle, currentUserId, cu
 
         if (error) throw error;
 
-        // ✅ Update local state so card reflects changes immediately
         setIsEditing(false);
         setLocalTitle(editTitle.trim());
         setLocalContent(editContent.trim());
@@ -367,7 +423,6 @@ export default function ArticleCard({ article: initialArticle, currentUserId, cu
       } catch (err) {
         alert('Edit failed: ' + err.message);
       } finally {
-        // ✅ Always reset saving state
         setSaving(false);
         setUploadingImage(false);
       }
@@ -379,7 +434,7 @@ export default function ArticleCard({ article: initialArticle, currentUserId, cu
   const currentEditIsImage = editImagePreview ? true : (!removeImage && article.file_type?.startsWith('image/'));
 
   return (
-    <div className="card">
+    <div className="card" id={`article-${article.id}`}>
       {isEditing ? (
         <div className="edit-container">
           <input className="edit-input" value={editTitle} onChange={(e) => setEditTitle(e.target.value)} placeholder="Title" />
